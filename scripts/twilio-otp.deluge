@@ -1,0 +1,362 @@
+// Twilio OTP Integration Script
+// Handles OTP generation, sending, and verification via Twilio
+
+// =====================================
+// CONFIGURATION
+// =====================================
+
+// Twilio Configuration
+twilio_account_sid = zoho.encryption.decrypt("TWILIO_ACCOUNT_SID");
+twilio_auth_token = zoho.encryption.decrypt("TWILIO_AUTH_TOKEN");
+twilio_phone_number = "+1234567890"; // Your Twilio phone number
+twilio_verify_service_sid = zoho.encryption.decrypt("TWILIO_VERIFY_SERVICE_SID");
+
+// OTP Configuration
+otp_validity_minutes = 10;
+otp_length = 6;
+
+// =====================================
+// OTP GENERATION FUNCTIONS
+// =====================================
+
+// Function to generate random OTP
+String generateOTP()
+{
+    otp = "";
+    for i = 1; i <= otp_length; i++
+    {
+        digit = randomNumber(0, 9);
+        otp = otp + digit;
+    }
+    return otp;
+}
+
+// Function to store OTP in context
+void storeOTP(String phone_number, String otp)
+{
+    // Store in bot context with timestamp
+    context_key = "otp_" + phone_number.replaceAll("[^0-9]", "");
+    
+    otp_data = Map();
+    otp_data.put("otp", otp);
+    otp_data.put("timestamp", zoho.currenttime);
+    otp_data.put("attempts", 0);
+    
+    // Store in Zoho CRM variable or session
+    zoho.salesiq.visitor.setVariable(context_key, otp_data.toString());
+}
+
+// =====================================
+// TWILIO SMS FUNCTIONS
+// =====================================
+
+// Function to send OTP via Twilio SMS
+Boolean sendOTP(String phone_number)
+{
+    try
+    {
+        // Generate OTP
+        otp = generateOTP();
+        
+        // Store OTP
+        storeOTP(phone_number, otp);
+        
+        // Format phone number
+        formatted_phone = formatPhoneNumber(phone_number);
+        
+        // Prepare Twilio API request
+        twilio_url = "https://api.twilio.com/2010-04-01/Accounts/" + twilio_account_sid + "/Messages.json";
+        
+        // Create message body
+        message_body = "Your HR Recruitment Bot verification code is: " + otp + ". Valid for " + otp_validity_minutes + " minutes. Do not share this code.";
+        
+        params = Map();
+        params.put("To", formatted_phone);
+        params.put("From", twilio_phone_number);
+        params.put("Body", message_body);
+        
+        // Make API call with Basic Auth
+        response = invokeurl
+        [
+            url: twilio_url
+            type: POST
+            parameters: params
+            detailed: true
+            connection: "twilio_connection"
+        ];
+        
+        if(response.get("status_code") == 201)
+        {
+            info "OTP sent successfully to " + formatted_phone;
+            return true;
+        }
+        else
+        {
+            info "Failed to send OTP: " + response.get("content");
+            return false;
+        }
+    }
+    catch (e)
+    {
+        info "Error sending OTP: " + e;
+        return false;
+    }
+}
+
+// Function to send OTP using Twilio Verify Service
+Boolean sendOTPVerify(String phone_number)
+{
+    try
+    {
+        formatted_phone = formatPhoneNumber(phone_number);
+        
+        verify_url = "https://verify.twilio.com/v2/Services/" + twilio_verify_service_sid + "/Verifications";
+        
+        params = Map();
+        params.put("To", formatted_phone);
+        params.put("Channel", "sms");
+        
+        response = invokeurl
+        [
+            url: verify_url
+            type: POST
+            parameters: params
+            connection: "twilio_connection"
+        ];
+        
+        if(response.get("status") == "pending")
+        {
+            info "Verification OTP sent to " + formatted_phone;
+            return true;
+        }
+        else
+        {
+            info "Failed to send verification: " + response;
+            return false;
+        }
+    }
+    catch (e)
+    {
+        info "Error in sendOTPVerify: " + e;
+        return false;
+    }
+}
+
+// =====================================
+// OTP VERIFICATION FUNCTIONS
+// =====================================
+
+// Function to verify OTP
+Map verifyOTP(String phone_number, String entered_otp)
+{
+    result = Map();
+    result.put("success", false);
+    result.put("message", "");
+    result.put("attempts_remaining", 0);
+    
+    try
+    {
+        // Retrieve stored OTP
+        context_key = "otp_" + phone_number.replaceAll("[^0-9]", "");
+        stored_data_str = zoho.salesiq.visitor.getVariable(context_key);
+        
+        if(stored_data_str == null || stored_data_str == "")
+        {
+            result.put("message", "No OTP found. Please request a new one.");
+            return result;
+        }
+        
+        stored_data = stored_data_str.toMap();
+        stored_otp = stored_data.get("otp");
+        timestamp = stored_data.get("timestamp");
+        attempts = stored_data.get("attempts").toNumber();
+        
+        // Check if OTP expired
+        current_time = zoho.currenttime;
+        time_diff = (current_time - timestamp).toNumber() / 60000; // Convert to minutes
+        
+        if(time_diff > otp_validity_minutes)
+        {
+            result.put("message", "OTP expired. Please request a new one.");
+            // Clear expired OTP
+            zoho.salesiq.visitor.setVariable(context_key, "");
+            return result;
+        }
+        
+        // Check attempt limit
+        max_attempts = 3;
+        if(attempts >= max_attempts)
+        {
+            result.put("message", "Maximum verification attempts exceeded. Please request a new OTP.");
+            zoho.salesiq.visitor.setVariable(context_key, "");
+            return result;
+        }
+        
+        // Verify OTP
+        if(entered_otp.toString() == stored_otp.toString())
+        {
+            result.put("success", true);
+            result.put("message", "Phone number verified successfully!");
+            // Clear OTP after successful verification
+            zoho.salesiq.visitor.setVariable(context_key, "");
+            return result;
+        }
+        else
+        {
+            // Increment attempts
+            attempts = attempts + 1;
+            stored_data.put("attempts", attempts);
+            zoho.salesiq.visitor.setVariable(context_key, stored_data.toString());
+            
+            attempts_left = max_attempts - attempts;
+            result.put("attempts_remaining", attempts_left);
+            result.put("message", "Invalid OTP. " + attempts_left + " attempt(s) remaining.");
+            return result;
+        }
+    }
+    catch (e)
+    {
+        result.put("message", "Error verifying OTP: " + e);
+        return result;
+    }
+}
+
+// Function to verify OTP using Twilio Verify Service
+Map verifyOTPVerify(String phone_number, String entered_otp)
+{
+    result = Map();
+    result.put("success", false);
+    result.put("message", "");
+    
+    try
+    {
+        formatted_phone = formatPhoneNumber(phone_number);
+        
+        verify_url = "https://verify.twilio.com/v2/Services/" + twilio_verify_service_sid + "/VerificationCheck";
+        
+        params = Map();
+        params.put("To", formatted_phone);
+        params.put("Code", entered_otp);
+        
+        response = invokeurl
+        [
+            url: verify_url
+            type: POST
+            parameters: params
+            connection: "twilio_connection"
+        ];
+        
+        if(response.get("status") == "approved")
+        {
+            result.put("success", true);
+            result.put("message", "Phone number verified successfully!");
+        }
+        else
+        {
+            result.put("message", "Invalid verification code. Please try again.");
+        }
+        
+        return result;
+    }
+    catch (e)
+    {
+        result.put("message", "Error in verification: " + e);
+        return result;
+    }
+}
+
+// =====================================
+// UTILITY FUNCTIONS
+// =====================================
+
+// Function to format phone number to E.164 format
+String formatPhoneNumber(String phone)
+{
+    // Remove all non-numeric characters
+    cleaned = phone.replaceAll("[^0-9]", "");
+    
+    // Add country code if not present
+    if(!cleaned.startsWith("+"))
+    {
+        if(cleaned.length() == 10)
+        {
+            // Assume US/India number, add +1 or +91
+            cleaned = "+91" + cleaned; // Change based on your region
+        }
+        else if(cleaned.length() == 11 && cleaned.startsWith("1"))
+        {
+            cleaned = "+" + cleaned;
+        }
+        else
+        {
+            cleaned = "+" + cleaned;
+        }
+    }
+    
+    return cleaned;
+}
+
+// Function to validate phone number format
+Boolean isValidPhone(String phone)
+{
+    cleaned = phone.replaceAll("[^0-9]", "");
+    
+    if(cleaned.length() >= 10 && cleaned.length() <= 15)
+    {
+        return true;
+    }
+    
+    return false;
+}
+
+// Function to resend OTP
+Boolean resendOTP(String phone_number)
+{
+    // Clear previous OTP
+    context_key = "otp_" + phone_number.replaceAll("[^0-9]", "");
+    zoho.salesiq.visitor.setVariable(context_key, "");
+    
+    // Send new OTP
+    return sendOTP(phone_number);
+}
+
+// Function to clear OTP data
+void clearOTP(String phone_number)
+{
+    context_key = "otp_" + phone_number.replaceAll("[^0-9]", "");
+    zoho.salesiq.visitor.setVariable(context_key, "");
+}
+
+// =====================================
+// WEBHOOK HANDLER (for Zoho Flow)
+// =====================================
+
+// Function to be called from Zoho Flow webhook
+Map handleOTPRequest(Map request_data)
+{
+    response = Map();
+    
+    action = request_data.get("action");
+    phone_number = request_data.get("phone_number");
+    
+    if(action == "send")
+    {
+        success = sendOTP(phone_number);
+        response.put("success", success);
+        response.put("message", success ? "OTP sent successfully" : "Failed to send OTP");
+    }
+    else if(action == "verify")
+    {
+        otp = request_data.get("otp");
+        verify_result = verifyOTP(phone_number, otp);
+        response = verify_result;
+    }
+    else if(action == "resend")
+    {
+        success = resendOTP(phone_number);
+        response.put("success", success);
+        response.put("message", success ? "OTP resent successfully" : "Failed to resend OTP");
+    }
+    
+    return response;
+}
