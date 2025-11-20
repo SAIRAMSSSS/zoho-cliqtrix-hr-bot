@@ -1,0 +1,329 @@
+// Zoho Recruit API Integration Script
+// This script handles all interactions with Zoho Recruit API
+
+// =====================================
+// CONFIGURATION
+// =====================================
+
+// API Base URL
+api_base_url = "https://recruit.zoho.com/recruit/v2";
+
+// OAuth Configuration
+oauth_client_id = zoho.encryption.decrypt("RECRUIT_CLIENT_ID");
+oauth_client_secret = zoho.encryption.decrypt("RECRUIT_CLIENT_SECRET");
+oauth_refresh_token = zoho.encryption.decrypt("RECRUIT_REFRESH_TOKEN");
+
+// =====================================
+// AUTHENTICATION FUNCTIONS
+// =====================================
+
+// Function to get fresh access token
+AccessToken getAccessToken()
+{
+    token_url = "https://accounts.zoho.com/oauth/v2/token";
+    
+    params = Map();
+    params.put("refresh_token", oauth_refresh_token);
+    params.put("client_id", oauth_client_id);
+    params.put("client_secret", oauth_client_secret);
+    params.put("grant_type", "refresh_token");
+    
+    response = invokeurl
+    [
+        url: token_url
+        type: POST
+        parameters: params
+    ];
+    
+    if(response.get("access_token") != null)
+    {
+        return response.get("access_token");
+    }
+    else
+    {
+        return "";
+    }
+}
+
+// =====================================
+// JOB FUNCTIONS
+// =====================================
+
+// Function to fetch all active jobs
+List fetchActiveJobs()
+{
+    access_token = getAccessToken();
+    
+    headers = Map();
+    headers.put("Authorization", "Zoho-oauthtoken " + access_token);
+    
+    params = Map();
+    params.put("fields", "Job_Opening_Name,Job_Opening_Status,City,State,Country,Skills,Experience,Salary,Job_Description,Department,Posting_Title");
+    params.put("criteria", "(Job_Opening_Status:equals:Active)");
+    params.put("per_page", "20");
+    params.put("sort_by", "Modified_Time");
+    params.put("sort_order", "desc");
+    
+    response = invokeurl
+    [
+        url: api_base_url + "/JobOpenings/search"
+        type: GET
+        parameters: params
+        headers: headers
+    ];
+    
+    if(response.get("data") != null)
+    {
+        return response.get("data").toList();
+    }
+    else
+    {
+        return {};
+    }
+}
+
+// Function to get job details by ID
+Map getJobDetails(String job_id)
+{
+    access_token = getAccessToken();
+    
+    headers = Map();
+    headers.put("Authorization", "Zoho-oauthtoken " + access_token);
+    
+    response = invokeurl
+    [
+        url: api_base_url + "/JobOpenings/" + job_id
+        type: GET
+        headers: headers
+    ];
+    
+    if(response.get("data") != null && response.get("data").size() > 0)
+    {
+        return response.get("data").get(0);
+    }
+    else
+    {
+        return Map();
+    }
+}
+
+// Function to search jobs by criteria
+List searchJobs(Map criteria)
+{
+    access_token = getAccessToken();
+    
+    headers = Map();
+    headers.put("Authorization", "Zoho-oauthtoken " + access_token);
+    
+    // Build criteria string
+    criteria_str = "(Job_Opening_Status:equals:Active)";
+    
+    if(criteria.get("skills") != null && criteria.get("skills") != "")
+    {
+        criteria_str = criteria_str + " and (Skills:contains:" + criteria.get("skills") + ")";
+    }
+    
+    if(criteria.get("location") != null && criteria.get("location") != "")
+    {
+        criteria_str = criteria_str + " and ((City:contains:" + criteria.get("location") + ") or (State:contains:" + criteria.get("location") + "))";
+    }
+    
+    params = Map();
+    params.put("criteria", criteria_str);
+    params.put("per_page", "10");
+    
+    response = invokeurl
+    [
+        url: api_base_url + "/JobOpenings/search"
+        type: GET
+        parameters: params
+        headers: headers
+    ];
+    
+    if(response.get("data") != null)
+    {
+        return response.get("data").toList();
+    }
+    else
+    {
+        return {};
+    }
+}
+
+// =====================================
+// CANDIDATE FUNCTIONS
+// =====================================
+
+// Function to create a candidate
+String createCandidate(Map candidate_data)
+{
+    access_token = getAccessToken();
+    
+    headers = Map();
+    headers.put("Authorization", "Zoho-oauthtoken " + access_token);
+    headers.put("Content-Type", "application/json");
+    
+    payload = Map();
+    data_list = {};
+    data_list.add(candidate_data);
+    payload.put("data", data_list);
+    
+    response = invokeurl
+    [
+        url: api_base_url + "/Candidates"
+        type: POST
+        parameters: payload.toString()
+        headers: headers
+    ];
+    
+    if(response.get("data") != null && response.get("data").size() > 0)
+    {
+        return response.get("data").get(0).get("details").get("id");
+    }
+    else
+    {
+        return "";
+    }
+}
+
+// Function to search candidate by email
+Map getCandidateByEmail(String email)
+{
+    access_token = getAccessToken();
+    
+    headers = Map();
+    headers.put("Authorization", "Zoho-oauthtoken " + access_token);
+    
+    params = Map();
+    params.put("criteria", "(Email:equals:" + email + ")");
+    
+    response = invokeurl
+    [
+        url: api_base_url + "/Candidates/search"
+        type: GET
+        parameters: params
+        headers: headers
+    ];
+    
+    if(response.get("data") != null && response.get("data").size() > 0)
+    {
+        return response.get("data").get(0);
+    }
+    else
+    {
+        return Map();
+    }
+}
+
+// Function to associate candidate with job
+Boolean associateCandidateWithJob(String candidate_id, String job_id)
+{
+    access_token = getAccessToken();
+    
+    headers = Map();
+    headers.put("Authorization", "Zoho-oauthtoken " + access_token);
+    headers.put("Content-Type", "application/json");
+    
+    payload = Map();
+    payload.put("associate_to", {job_id});
+    
+    response = invokeurl
+    [
+        url: api_base_url + "/Candidates/" + candidate_id + "/Actions/associate"
+        type: PUT
+        parameters: payload.toString()
+        headers: headers
+    ];
+    
+    return response.get("data") != null;
+}
+
+// =====================================
+// APPLICATION TRACKING FUNCTIONS
+// =====================================
+
+// Function to get candidate applications
+List getCandidateApplications(String candidate_id)
+{
+    access_token = getAccessToken();
+    
+    headers = Map();
+    headers.put("Authorization", "Zoho-oauthtoken " + access_token);
+    
+    params = Map();
+    params.put("criteria", "(Candidate_Id:equals:" + candidate_id + ")");
+    
+    response = invokeurl
+    [
+        url: api_base_url + "/JobApplications/search"
+        type: GET
+        parameters: params
+        headers: headers
+    ];
+    
+    if(response.get("data") != null)
+    {
+        return response.get("data").toList();
+    }
+    else
+    {
+        return {};
+    }
+}
+
+// Function to get interview events for candidate
+List getInterviewEvents(String candidate_id)
+{
+    access_token = getAccessToken();
+    
+    headers = Map();
+    headers.put("Authorization", "Zoho-oauthtoken " + access_token);
+    
+    params = Map();
+    params.put("criteria", "(Candidate_Id:equals:" + candidate_id + ")");
+    params.put("per_page", "10");
+    
+    response = invokeurl
+    [
+        url: api_base_url + "/Events/search"
+        type: GET
+        parameters: params
+        headers: headers
+    ];
+    
+    if(response.get("data") != null)
+    {
+        return response.get("data").toList();
+    }
+    else
+    {
+        return {};
+    }
+}
+
+// =====================================
+// UTILITY FUNCTIONS
+// =====================================
+
+// Function to format job data for carousel display
+Map formatJobForCarousel(Map job)
+{
+    card = Map();
+    card.put("title", job.get("Job_Opening_Name"));
+    card.put("subtitle", job.get("City") + ", " + job.get("State"));
+    card.put("description", job.get("Skills"));
+    card.put("job_id", job.get("id"));
+    card.put("experience", job.get("Experience"));
+    card.put("salary", job.get("Salary"));
+    
+    return card;
+}
+
+// Function to handle API errors
+void handleAPIError(Map error_response)
+{
+    error_code = error_response.get("code");
+    error_message = error_response.get("message");
+    
+    info "API Error: " + error_code + " - " + error_message;
+}
